@@ -5,11 +5,33 @@ import 'dotenv/config';
 const app = express();
 app.use(express.json());
 
-const TODOIST_TOKEN = process.env.TODOIST_TOKEN; // récupéré depuis Cloud Run
+const TODOIST_TOKEN = process.env.TODOIST_TOKEN;
+const SHARED = process.env.MCP_SHARED_SECRET;
 
-// Commande MCP : Créer une tâche
+// 1) Ouvrir les endpoints well-known (no auth)
+app.get("/.well-known/oauth-authorization-server", (req, res) => {
+  // Si tu n'implémentes pas OAuth, réponds 204 pour signaler "pas d’info"
+  return res.status(204).end();
+});
+// (tu peux aussi ajouter un /healthz si tu veux)
+app.get("/healthz", (req, res) => res.json({ ok: true }));
+
+// 2) Middleware de protection pour le reste
+app.use((req, res, next) => {
+  // Laisse passer les chemins ouverts
+  if (req.path === "/.well-known/oauth-authorization-server" || req.path === "/healthz") {
+    return next();
+  }
+  // Exige le header secret ailleurs
+  if (!SHARED || req.headers["x-mcp-secret"] !== SHARED) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  next();
+});
+
+// 3) Tes routes métier
 app.post("/create_task", async (req, res) => {
-  const { content, project_id } = req.body;
+  const { content, project_id } = req.body || {};
   const r = await fetch("https://api.todoist.com/rest/v2/tasks", {
     method: "POST",
     headers: {
@@ -18,27 +40,14 @@ app.post("/create_task", async (req, res) => {
     },
     body: JSON.stringify({ content, project_id })
   });
-  res.json(await r.json());
+  res.status(r.status).json(await r.json());
 });
 
-// Commande MCP : Lister les tâches
 app.get("/list_tasks", async (req, res) => {
   const r = await fetch("https://api.todoist.com/rest/v2/tasks", {
     headers: { "Authorization": `Bearer ${TODOIST_TOKEN}` }
   });
-  res.json(await r.json());
+  res.status(r.status).json(await r.json());
 });
 
-// Cloud Run écoute sur le port 8080
-app.listen(process.env.PORT || 8080, () =>
-  console.log("MCP connector for Todoist running")
-);
-
-app.use((req,res,next)=>{
-    const s = process.env.MCP_SHARED_SECRET;
-    if (!s || req.headers['x-mcp-secret'] !== s) {
-      return res.status(401).json({error:'unauthorized'});
-    }
-    next();
-  });
-  
+app.listen(process.env.PORT || 8080, () => console.log("MCP connector for Todoist running"));
