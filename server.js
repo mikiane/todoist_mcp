@@ -22,35 +22,136 @@ const now  = ()=>Math.floor(Date.now()/1000);
 app.get('/', (_req,res)=>res.json({ status:'ok', mcp:true }));
 
 // Root - POST pour MCP discovery (ChatGPT envoie POST pour découvrir les outils)
-app.post('/', (_req,res)=>{
-  const tools = [
-    { 
-      name:'search', 
-      description:'Recherche des tâches Todoist',
-      inputSchema: { 
-        type:'object', 
-        properties:{ query:{type:'string', description:'Texte à rechercher dans les tâches'} }, 
-        required:['query'] 
-      }
-    },
-    { 
-      name:'fetch', 
-      description:'Récupère une tâche Todoist par ID',
-      inputSchema: { 
-        type:'object', 
-        properties:{ id:{type:'string', description:'ID de la tâche à récupérer'} }, 
-        required:['id'] 
-      }
+app.post('/', (req,res)=>{
+  // Log pour débugger ce que ChatGPT envoie
+  console.log('POST / request:', JSON.stringify({
+    headers: req.headers,
+    body: req.body
+  }, null, 2));
+  
+  // Si ChatGPT demande des méthodes spécifiques
+  const { method } = req.body || {};
+  
+  if (method === 'tools/list') {
+    // Réponse pour la liste des outils
+    res.json({
+      tools: [
+        { 
+          name:'search', 
+          description:'Recherche des tâches Todoist',
+          inputSchema: { 
+            type:'object', 
+            properties:{ query:{type:'string', description:'Texte à rechercher dans les tâches'} }, 
+            required:['query'] 
+          }
+        },
+        { 
+          name:'fetch', 
+          description:'Récupère une tâche Todoist par ID',
+          inputSchema: { 
+            type:'object', 
+            properties:{ id:{type:'string', description:'ID de la tâche à récupérer'} }, 
+            required:['id'] 
+          }
+        }
+      ]
+    });
+  } else if (method === 'tools/call' && req.body.params) {
+    // Gérer les appels d'outils directement
+    const { name, arguments: args } = req.body.params || {};
+    
+    if (name === 'search') {
+      handleSearch(args, res);
+    } else if (name === 'fetch') {
+      handleFetch(args, res);
+    } else {
+      res.status(404).json({ error: 'Tool not found' });
     }
-  ];
-  res.json({ 
-    mcpVersion: '1.0.0',
-    tools,
-    capabilities: {
-      tools: true
-    }
-  });
+  } else {
+    // Réponse par défaut pour la découverte
+    const tools = [
+      { 
+        name:'search', 
+        description:'Recherche des tâches Todoist',
+        inputSchema: { 
+          type:'object', 
+          properties:{ query:{type:'string', description:'Texte à rechercher dans les tâches'} }, 
+          required:['query'] 
+        }
+      },
+      { 
+        name:'fetch', 
+        description:'Récupère une tâche Todoist par ID',
+        inputSchema: { 
+          type:'object', 
+          properties:{ id:{type:'string', description:'ID de la tâche à récupérer'} }, 
+          required:['id'] 
+        }
+      }
+    ];
+    res.json({ 
+      mcpVersion: '1.0.0',
+      name: 'todoist-mcp',
+      description: 'Connecteur MCP pour Todoist',
+      tools,
+      capabilities: {
+        tools: true
+      }
+    });
+  }
 });
+
+// Fonctions helper pour gérer les outils
+async function handleSearch(args, res) {
+  try {
+    const { query } = args || {};
+    if (!query) return res.status(400).json({ error:'query_required' });
+    
+    const r = await fetch('https://api.todoist.com/rest/v2/tasks', {
+      headers:{ 'Authorization': `Bearer ${TODOIST_TOKEN}` }
+    });
+    const tasks = await r.json();
+    const results = (Array.isArray(tasks)?tasks:[])
+      .filter(t => (t.content||'').toLowerCase().includes(query.toLowerCase()))
+      .map(t => ({ 
+        id:String(t.id), 
+        title:t.content, 
+        text:t.description||'', 
+        url:`https://todoist.com/showTask?id=${t.id}` 
+      }));
+    res.json({ result: results });
+  } catch(e){ 
+    res.status(500).json({ error:String(e) }); 
+  }
+}
+
+async function handleFetch(args, res) {
+  try {
+    const { id } = args || {};
+    if (!id) return res.status(400).json({ error:'id_required' });
+    
+    const r = await fetch(`https://api.todoist.com/rest/v2/tasks/${id}`, {
+      headers:{ 'Authorization': `Bearer ${TODOIST_TOKEN}` }
+    });
+    if (!r.ok) return res.status(r.status).json(await r.json());
+    
+    const t = await r.json();
+    res.json({ 
+      result: {
+        id:String(t.id), 
+        title:t.content, 
+        text:t.description||'', 
+        url:`https://todoist.com/showTask?id=${t.id}`, 
+        metadata:{ 
+          project_id:t.project_id, 
+          due:t.due 
+        } 
+      }
+    });
+  } catch(e){ 
+    res.status(500).json({ error:String(e) }); 
+  }
+}
 
 // 1) Découverte OAuth -> **200 + JSON** (plus JAMAIS 204)
 app.get('/.well-known/oauth-authorization-server', (_req, res) => {
