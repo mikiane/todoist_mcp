@@ -16,11 +16,41 @@ const tokens    = new Map();
 const rand = (n=32)=>crypto.randomBytes(n).toString('hex');
 const now  = ()=>Math.floor(Date.now()/1000);
 
-/* ---------- ROUTES PUBLIQUES (PAS D’AUTH) ---------- */
+/* ---------- ROUTES PUBLIQUES (PAS D'AUTH) ---------- */
 
-// Root
+// Root - GET pour vérification basique
 app.get('/', (_req,res)=>res.json({ status:'ok', mcp:true }));
-app.post('/', (_req,res)=>res.status(404).json({ error:'not_found' }));
+
+// Root - POST pour MCP discovery (ChatGPT envoie POST pour découvrir les outils)
+app.post('/', (_req,res)=>{
+  const tools = [
+    { 
+      name:'search', 
+      description:'Recherche des tâches Todoist',
+      inputSchema: { 
+        type:'object', 
+        properties:{ query:{type:'string', description:'Texte à rechercher dans les tâches'} }, 
+        required:['query'] 
+      }
+    },
+    { 
+      name:'fetch', 
+      description:'Récupère une tâche Todoist par ID',
+      inputSchema: { 
+        type:'object', 
+        properties:{ id:{type:'string', description:'ID de la tâche à récupérer'} }, 
+        required:['id'] 
+      }
+    }
+  ];
+  res.json({ 
+    mcpVersion: '1.0.0',
+    tools,
+    capabilities: {
+      tools: true
+    }
+  });
+});
 
 // 1) Découverte OAuth -> **200 + JSON** (plus JAMAIS 204)
 app.get('/.well-known/oauth-authorization-server', (_req, res) => {
@@ -70,6 +100,58 @@ app.post('/oauth/token', (req,res)=>{
 
 // Health
 app.get('/healthz', (_req,res)=>res.json({ ok:true }));
+
+// Routes pour les outils MCP (sans auth pour ChatGPT)
+app.post('/tools/search', async (req,res)=>{
+  try {
+    const { query } = req.body || {};
+    if (!query) return res.status(400).json({ error:'query_required' });
+    
+    const r = await fetch('https://api.todoist.com/rest/v2/tasks', {
+      headers:{ 'Authorization': `Bearer ${TODOIST_TOKEN}` }
+    });
+    const tasks = await r.json();
+    const results = (Array.isArray(tasks)?tasks:[])
+      .filter(t => (t.content||'').toLowerCase().includes(query.toLowerCase()))
+      .map(t => ({ 
+        id:String(t.id), 
+        title:t.content, 
+        text:t.description||'', 
+        url:`https://todoist.com/showTask?id=${t.id}` 
+      }));
+    res.json({ results });
+  } catch(e){ 
+    res.status(500).json({ error:String(e) }); 
+  }
+});
+
+app.post('/tools/fetch', async (req,res)=>{
+  try {
+    const { id } = req.body || {};
+    if (!id) return res.status(400).json({ error:'id_required' });
+    
+    const r = await fetch(`https://api.todoist.com/rest/v2/tasks/${id}`, {
+      headers:{ 'Authorization': `Bearer ${TODOIST_TOKEN}` }
+    });
+    if (!r.ok) return res.status(r.status).json(await r.json());
+    
+    const t = await r.json();
+    res.json({ 
+      result: {
+        id:String(t.id), 
+        title:t.content, 
+        text:t.description||'', 
+        url:`https://todoist.com/showTask?id=${t.id}`, 
+        metadata:{ 
+          project_id:t.project_id, 
+          due:t.due 
+        } 
+      }
+    });
+  } catch(e){ 
+    res.status(500).json({ error:String(e) }); 
+  }
+});
 
 // 4) SSE (ouvert) — accepte GET & POST, reste OUVERT
 function sseHandler(req, res) {
