@@ -17,17 +17,24 @@ app.get("/.well-known/oauth-authorization-server", (req, res) => {
 app.get("/healthz", (req, res) => res.json({ ok: true }));
 
 // 2) Middleware de protection pour le reste
+// Middleware de protection
 app.use((req, res, next) => {
-  // Laisse passer les chemins ouverts
-  if (req.path === "/.well-known/oauth-authorization-server" || req.path === "/healthz") {
-    return next();
-  }
-  // Exige le header secret ailleurs
-  if (!SHARED || req.headers["x-mcp-secret"] !== SHARED) {
-    return res.status(401).json({ error: "unauthorized" });
-  }
-  next();
-});
+    const publicPaths = [
+      "/",
+      "/.well-known/oauth-authorization-server",
+      "/.well-known/openid-configuration"
+    ];
+    if (publicPaths.includes(req.path)) {
+      // Renvoie un 200 minimaliste pour satisfaire ChatGPT
+      return res.json({ status: "ok" });
+    }
+    // Vérification du secret pour tout le reste
+    if (!process.env.MCP_SHARED_SECRET || req.headers["x-mcp-secret"] !== process.env.MCP_SHARED_SECRET) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+    next();
+  });
+  
 
 // 3) Tes routes métier
 app.post("/create_task", async (req, res) => {
